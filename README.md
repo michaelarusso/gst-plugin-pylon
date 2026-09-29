@@ -277,6 +277,38 @@ Configure a hardware trigger on Line1 for the trigger FrameStart:
 gst-launch-1.0 pylonsrc cam::TriggerSource-FrameStart=Line1 cam::TriggerMode-FrameStart=On ! videoconvert ! autovideosink
 ```
 
+### Executing commands
+
+Command features (e.g. `CounterReset`, `TriggerSoftware`, `TimestampLatch`) have no value, so they are not exposed as `cam::` properties. They are executed at runtime with the `execute-command` action signal instead:
+
+```
+gboolean execute-command (GstElement *pylonsrc, const gchar *command,
+                          const gchar *selector, const gchar *selector_value);
+```
+
+* `command`: name of the command feature.
+* `selector`, `selector_value`: the selector the command depends on and the value to select, or `NULL` for commands that are not selected. The selector is restored to its previous value afterwards.
+
+The signal returns `TRUE` once the command has executed and reports completion, and `FALSE` (with the reason in the GStreamer log) if the camera is not open, the feature does not exist or is not a command, or execution fails. The camera must be open: the element must be in the `PAUSED` or `PLAYING` state, or a `cam::`/`stream::` property must have been accessed, which opens the camera.
+
+**Example**
+
+Reset Counter 1, e.g. to align the frame counters of hardware triggered cameras:
+
+```
+/* C */
+gboolean ok = FALSE;
+g_signal_emit_by_name (pylonsrc, "execute-command", "CounterReset",
+    "CounterSelector", "Counter1", &ok);
+```
+
+```
+# Python
+ok = pylonsrc.emit("execute-command", "CounterReset", "CounterSelector", "Counter1")
+```
+
+Some cameras only allow a software counter reset if `cam::CounterResetSource-Counter1=Software` is set.
+
 ### Chunks and Capture metadata
 
 Chunk support is available. The selected chunks will be appended to each gstreamer buffer as meta data.

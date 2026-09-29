@@ -51,7 +51,9 @@
 #include "gstpylonimagehandler.h"
 #include "gstpylonsysmembufferfactory.h"
 
+#include <chrono>
 #include <map>
+#include <thread>
 #include <vector>
 
 /* retry open camera limits in case of collision with other
@@ -59,6 +61,10 @@
  */
 constexpr int FAILED_OPEN_RETRY_COUNT = 30;
 constexpr int FAILED_OPEN_RETRY_WAIT_TIME_MS = 1000;
+
+/* maximum time to wait for an executed command to report completion */
+constexpr int COMMAND_DONE_TIMEOUT_MS = 1000;
+constexpr int COMMAND_DONE_POLL_INTERVAL_MS = 1;
 
 /* Mapping of GstStructure with its corresponding formats */
 typedef struct {
@@ -1165,6 +1171,102 @@ gchar* gst_pylon_camera_get_string_properties() {
 gchar* gst_pylon_stream_grabber_get_string_properties() {
   return gst_pylon_get_string_properties(
       gst_pylon_append_stream_grabber_properties);
+}
+
+gboolean gst_pylon_execute_command(GstPylon* self, const gchar* command,
+                                   const gchar* selector,
+                                   const gchar* selector_value, GError** err) {
+  g_return_val_if_fail(self, FALSE);
+  g_return_val_if_fail(command, FALSE);
+  g_return_val_if_fail(err && *err == NULL, FALSE);
+
+  const gboolean has_selector = selector && *selector;
+  if (has_selector && !(selector_value && *selector_value)) {
+    g_set_error(err, GST_LIBRARY_ERROR, GST_LIBRARY_ERROR_SETTINGS,
+                "Selector \"%s\" given without a selector value", selector);
+    return FALSE;
+  }
+
+  try {
+    GenApi::INodeMap& nodemap = self->camera->GetNodeMap();
+
+    /* Hold the node map lock for the whole select/execute/restore sequence so
+     * no concurrent feature access can change the selector in between. */
+    GenApi::AutoLock lock(nodemap.GetLock());
+
+    GenApi::INode* command_node = nodemap.GetNode(command);
+    if (!command_node || !GenApi::IsImplemented(command_node)) {
+      g_set_error(err, GST_LIBRARY_ERROR, GST_LIBRARY_ERROR_SETTINGS,
+                  "Feature \"%s\" is not available on this camera", command);
+      return FALSE;
+    }
+    if (command_node->GetPrincipalInterfaceType() != GenApi::intfICommand) {
+      g_set_error(err, GST_LIBRARY_ERROR, GST_LIBRARY_ERROR_SETTINGS,
+                  "Feature \"%s\" is not a command", command);
+      return FALSE;
+    }
+
+    /* Selectors may be enumerations or integers, so they are set through their
+     * string representation. The previous value is restored afterwards so the
+     * command does not leave a side effect on other selected features. */
+    Pylon::CParameter selector_param;
+    std::string previous_selector_value;
+    if (has_selector) {
+      GenApi::INode* selector_node = nodemap.GetNode(selector);
+      if (!selector_node || !GenApi::IsImplemented(selector_node)) {
+        g_set_error(err, GST_LIBRARY_ERROR, GST_LIBRARY_ERROR_SETTINGS,
+                    "Selector \"%s\" is not available on this camera",
+                    selector);
+        return FALSE;
+      }
+      selector_param.Attach(selector_node);
+      previous_selector_value = selector_param.ToString().c_str();
+      selector_param.FromString(selector_value);
+    }
+
+    auto restore_selector = [&]() {
+      if (!has_selector) {
+        return;
+      }
+      try {
+        selector_param.FromString(previous_selector_value.c_str());
+      } catch (const Pylon::GenericException& e) {
+        GST_WARNING("Unable to restore selector \"%s\" to \"%s\": %s", selector,
+                    previous_selector_value.c_str(), e.GetDescription());
+      }
+    };
+
+    try {
+      Pylon::CCommandParameter command_param(command_node);
+      command_param.Execute();
+
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(COMMAND_DONE_TIMEOUT_MS);
+      while (!command_param.IsDone()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          restore_selector();
+          g_set_error(err, GST_LIBRARY_ERROR, GST_LIBRARY_ERROR_FAILED,
+                      "Command \"%s\" did not complete within %d ms", command,
+                      COMMAND_DONE_TIMEOUT_MS);
+          return FALSE;
+        }
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(COMMAND_DONE_POLL_INTERVAL_MS));
+      }
+    } catch (const Pylon::GenericException&) {
+      restore_selector();
+      throw;
+    }
+
+    restore_selector();
+  } catch (const Pylon::GenericException& e) {
+    g_set_error(err, GST_LIBRARY_ERROR, GST_LIBRARY_ERROR_FAILED,
+                "Failed to execute command \"%s\": %s", command,
+                e.GetDescription());
+    return FALSE;
+  }
+
+  return TRUE;
 }
 
 GObject* gst_pylon_get_camera(GstPylon* self) {

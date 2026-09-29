@@ -13,6 +13,9 @@ All notable changes to this project will be documented in this file.
 - Unlock maps to `GST_FLOW_FLUSHING` (with `unlock_stop` / ClearInterrupt) instead of EOS
 
 ### Added
+- `execute-command` action signal on `pylonsrc` to execute GenICam command
+  features (e.g. `CounterReset`) with an optional selector; camemu test
+  `execute_command.py` covers it with software triggering
 - Camemu test `restart_resource_leak.py` uses 4096×4096 RGB frames and checks
   pipe FD + RSS growth across EOS and abrupt-stop pipeline restart cycles
 - CI installs `python3-gi` so camemu appsink / restart regression tests run

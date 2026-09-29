@@ -268,6 +268,10 @@ if command -v python3 >/dev/null 2>&1 || [[ -x /usr/bin/python3 ]]; then
       "$PYTHON_GI" "$SCRIPT_DIR/appsink_buffer_count.py" \
         --serial "$EMU_SERIAL_0" --buffers 12
 
+    expect_ok "execute_command_signal" \
+      "$PYTHON_GI" "$SCRIPT_DIR/execute_command.py" \
+        --serial "$EMU_SERIAL_0" --triggers 5
+
     # Pipe FD / VmRSS sampling uses /proc (Linux). Camemu itself is
     # cross-platform; skip only this check elsewhere.
     if [[ -d /proc/self/fd ]]; then
@@ -286,10 +290,12 @@ if command -v python3 >/dev/null 2>&1 || [[ -x /usr/bin/python3 ]]; then
     fi
   else
     run_skip "appsink_buffer_count (PyGObject not available)"
+    run_skip "execute_command_signal (PyGObject not available)"
     run_skip "restart_resource_cleanup (PyGObject not available)"
   fi
 else
   run_skip "appsink_buffer_count (python3 not available)"
+  run_skip "execute_command_signal (python3 not available)"
   run_skip "restart_resource_cleanup (python3 not available)"
 fi
 

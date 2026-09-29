@@ -99,8 +99,19 @@ static gboolean gst_pylon_src_unlock_stop(GstBaseSrc* src);
 static gboolean gst_pylon_src_query(GstBaseSrc* src, GstQuery* query);
 static void gst_plyon_src_add_metadata(GstPylonSrc* self, GstBuffer* buf);
 static GstFlowReturn gst_pylon_src_create(GstPushSrc* src, GstBuffer** buf);
+static gboolean gst_pylon_src_execute_command(GstPylonSrc* self,
+                                              const gchar* command,
+                                              const gchar* selector,
+                                              const gchar* selector_value);
 
 static void gst_pylon_src_child_proxy_init(GstChildProxyInterface* iface);
+
+enum {
+  SIGNAL_EXECUTE_COMMAND,
+  LAST_SIGNAL,
+};
+
+static guint gst_pylon_src_signals[LAST_SIGNAL] = {0};
 
 enum {
   PROP_0,
@@ -383,6 +394,27 @@ static void gst_pylon_src_class_init(GstPylonSrcClass* klass) {
 
   g_free(cam_params);
   g_free(stream_params);
+
+  /**
+   * GstPylonSrc::execute-command:
+   * @pylonsrc: the #GstPylonSrc
+   * @command: name of the GenICam command feature, e.g. "CounterReset"
+   * @selector: (nullable): name of the selector the command depends on, e.g.
+   *   "CounterSelector", or %NULL if the command is not selected
+   * @selector_value: (nullable): value to select, e.g. "Counter1"
+   *
+   * Executes a GenICam command feature on the open camera and waits for it to
+   * complete. Command features have no value, so they are not exposed as
+   * "cam::" properties. The selector, if given, is restored to its previous
+   * value afterwards.
+   *
+   * Returns: %TRUE if the command was executed and completed.
+   */
+  gst_pylon_src_signals[SIGNAL_EXECUTE_COMMAND] = g_signal_new_class_handler(
+      "execute-command", G_TYPE_FROM_CLASS(klass),
+      static_cast<GSignalFlags>(G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION),
+      G_CALLBACK(gst_pylon_src_execute_command), NULL, NULL, NULL,
+      G_TYPE_BOOLEAN, 3, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
 
   base_src_class->get_caps = GST_DEBUG_FUNCPTR(gst_pylon_src_get_caps);
   base_src_class->fixate = GST_DEBUG_FUNCPTR(gst_pylon_src_fixate);
@@ -857,7 +889,14 @@ static gboolean gst_pylon_src_stop(GstBaseSrc* src) {
 
   GST_INFO_OBJECT(self, "Stopping camera device");
 
-  ret = gst_pylon_stop(self->pylon, &error);
+  /* Detach the camera under the object lock so a concurrent execute-command,
+   * which holds the lock while using it, finishes before it is freed. */
+  GST_OBJECT_LOCK(self);
+  GstPylon* pylon = self->pylon;
+  self->pylon = NULL;
+  GST_OBJECT_UNLOCK(self);
+
+  ret = gst_pylon_stop(pylon, &error);
 
   if (ret == FALSE && error) {
     GST_ELEMENT_ERROR(self, LIBRARY, FAILED, ("Failed to close camera."),
@@ -865,8 +904,7 @@ static gboolean gst_pylon_src_stop(GstBaseSrc* src) {
     g_error_free(error);
   }
 
-  gst_pylon_free(self->pylon);
-  self->pylon = NULL;
+  gst_pylon_free(pylon);
 
   Pylon::PylonTerminate();
 
@@ -894,6 +932,47 @@ static gboolean gst_pylon_src_unlock_stop(GstBaseSrc* src) {
 
   if (self->pylon) {
     gst_pylon_clear_capture_interrupt(self->pylon);
+  }
+
+  return TRUE;
+}
+
+static gboolean gst_pylon_src_execute_command(GstPylonSrc* self,
+                                              const gchar* command,
+                                              const gchar* selector,
+                                              const gchar* selector_value) {
+  GError* error = NULL;
+  gboolean ret = FALSE;
+
+  g_return_val_if_fail(GST_IS_PYLON_SRC(self), FALSE);
+
+  if (!command || !*command) {
+    GST_ERROR_OBJECT(self, "execute-command requires a command name");
+    return FALSE;
+  }
+
+  GST_OBJECT_LOCK(self);
+  if (!self->pylon) {
+    GST_OBJECT_UNLOCK(self);
+    GST_ERROR_OBJECT(
+        self, "Unable to execute command \"%s\": no camera is open", command);
+    return FALSE;
+  }
+  ret = gst_pylon_execute_command(self->pylon, command, selector,
+                                  selector_value, &error);
+  GST_OBJECT_UNLOCK(self);
+
+  if (!ret) {
+    GST_ERROR_OBJECT(self, "%s", error ? error->message : "unknown error");
+    g_clear_error(&error);
+    return FALSE;
+  }
+
+  if (selector && *selector) {
+    GST_INFO_OBJECT(self, "Executed command \"%s\" (%s=%s)", command, selector,
+                    selector_value);
+  } else {
+    GST_INFO_OBJECT(self, "Executed command \"%s\"", command);
   }
 
   return TRUE;
