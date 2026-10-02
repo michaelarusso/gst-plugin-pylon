@@ -779,6 +779,22 @@ static gboolean gst_pylon_src_decide_allocation(GstBaseSrc* src,
   return TRUE;
 }
 
+/* pylon unloads its transport layers when the last PylonTerminate() balances
+ * the first PylonInitialize(), e.g. when the only pylonsrc elements of the
+ * process stop for a pipeline restart, while objects owned by libpylonbase can
+ * still refer to them and crash on their next use. Keep the runtime
+ * initialized for the life of the process. Done on the first start rather than
+ * in plugin_init so the plugin scanner, which never starts an element, does
+ * not initialize pylon. */
+static void gst_pylon_src_keep_runtime_initialized(void) {
+  static gsize initialized = 0;
+
+  if (g_once_init_enter(&initialized)) {
+    Pylon::PylonInitialize();
+    g_once_init_leave(&initialized, 1);
+  }
+}
+
 /* start and stop processing, ideal for opening/closing the resource */
 static gboolean gst_pylon_src_start(GstBaseSrc* src) {
   GstPylonSrc* self = GST_PYLON_SRC(src);
@@ -808,6 +824,8 @@ static gboolean gst_pylon_src_start(GstBaseSrc* src) {
       goto log_gst_error;
     }
   }
+
+  gst_pylon_src_keep_runtime_initialized();
 
   GST_OBJECT_LOCK(self);
 

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Keep the pylon runtime initialized for the life of the process, so stopping
+  the last pylonsrc elements (e.g. for a pipeline restart) no longer unloads
+  pylon's transport layers while libpylonbase still references them (crash in
+  libpylonbase on a pipeline's transition to NULL)
 - Release pending grab results on flush/disconnect and distinguish unlock from
   disconnect in the image handler (frame buffer leak on pipeline stop)
 - Unref the stream-grabber GObject and destroy the InstantCamera device on
